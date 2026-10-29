@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "id.segara.pmo",
+        "sha256_cert_fingerprints": ["6C:59:78:2E:5D:24:DB:9A:DD:F3:06:80:55:CD:FB:BF:DA:C2:17:56:97:1B:8D:57:A4:9F:7C:C4:2E:B9:E4:56"]
+      }
+    }]
