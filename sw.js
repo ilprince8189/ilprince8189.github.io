@@ -1,6 +1,6 @@
 /* SEGARA PMO service worker: keeps the app screens available offline.
  * Programme data is cached by the app itself; requests to Google are never cached here. */
-var VERSION = 'segara-pmo-v2';
+var VERSION = 'segara-pmo-v3';
 var SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'config.js', 'demo.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', function (e) {

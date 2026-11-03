@@ -10,11 +10,12 @@
   var PALETTE = ['#BF8F00', '#2E75B6', '#548235', '#D6337D', '#008080', '#7F7F7F', '#4472C4', '#ED7D31', '#70AD47', '#7030A0', '#0E7FA8', '#C00000'];
   var DAY = 86400000;
   var ROLE_HINT = { Viewer: 'Sees the dashboard only.', Editor: 'Updates, adds and deletes sub-activities and risks in the streams ticked below.', Admin: 'Changes everything, including streams and access.' };
-  var LS = { token: 'segara.idtoken.v1', cache: 'segara.cache.v1', filters: 'segara.filters.v1' };
+  var LS = { token: 'segara.idtoken.v1', cache: 'segara.cache.v1', filters: 'segara.filters.v1', seen: 'segara.chatseen.v1' };
 
   var MODES = {
     dashboard: { label: 'Dashboard', tabs: [['overview', 'Overview'], ['list', 'Sub-activities'], ['timeline', 'Timeline'], ['risks', 'Risks and issues']] },
     input: { label: 'Input', roles: ['Admin', 'Editor'], tabs: [['update', 'Weekly update'], ['activity', 'Add or edit sub-activity'], ['streams', 'Streams'], ['riskform', 'Risks and issues'], ['mylog', 'Change log', ['Editor']]] },
+    chat: { label: 'Chat', tabs: [['team', 'Team chat'], ['ask', 'Ask AI']] },
     admin: { label: 'Admin', roles: ['Admin'], tabs: [['users', 'Users'], ['log', 'Change log'], ['deleted', 'Deleted items'], ['settings', 'Settings']] }
   };
 
@@ -24,7 +25,8 @@
     mode: 'dashboard', tab: 'overview',
     f: { stream: '', status: '', health: '', owner: '', q: '', done: false },
     edits: {}, saved: {}, sel: { act: null, stream: null, risk: null, user: null }, preset: { stream: null },
-    msgs: {}, log: null, logQ: '', deleted: null, detail: null, confirm: null, draft: {}
+    msgs: {}, log: null, logQ: '', deleted: null, detail: null, confirm: null, draft: {},
+    chat: { sum: null, ai: false, threads: {}, loading: {}, room: 'room:all', seen: {}, drafts: {}, err: {}, aiHist: [], aiBusy: false, aiErr: null, sending: {} }
   };
 
   /* ---------------- helpers ---------------- */
@@ -170,6 +172,7 @@
       S.offline = false; S.err = null; S.lastSync = Date.now(); S.busy = false;
       store(LS.cache, { email: S.auth.email, at: S.lastSync, data: d });
       render();
+      chatSummary();
     }).catch(function (e) {
       S.busy = false;
       if (handleErr(e)) return;
@@ -215,7 +218,8 @@
     upd: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l4 4 10-10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     add: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
     more: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="19" cy="12" r="1.6" fill="currentColor"/></svg>',
-    risk: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l9 16H3z M12 10v4 M12 17v.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg>'
+    risk: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l9 16H3z M12 10v4 M12 17v.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg>',
+    chat: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>'
   };
   function syncText() {
     if (DEMO) return ['busy', 'Demo data'];
@@ -232,6 +236,7 @@
     if (!S.auth && !DEMO) return renderSignIn(app);
     if (!S.loaded) return renderLoading(app);
     var keep = document.activeElement && document.activeElement.id, pos = null;
+    var logs = {}; document.querySelectorAll('.chatlog').forEach(function (el) { logs[el.id] = { top: el.scrollTop, bottom: el.scrollHeight - el.scrollTop - el.clientHeight < 40 }; });
     try { pos = document.activeElement && document.activeElement.selectionStart; } catch (e) { pos = null; }
     var st = syncText();
     var modes = Object.keys(MODES).filter(allowedMode);
@@ -239,13 +244,15 @@
     var nav = [['dashboard/overview', 'Dashboard', ICON.dash, S.mode === 'dashboard']];
     if (editor) { nav.push(['input/update', 'Update', ICON.upd, S.mode === 'input' && S.tab === 'update']); nav.push(['input/activity', 'Add', ICON.add, S.mode === 'input' && S.tab === 'activity']); }
     else nav.push(['dashboard/risks', 'Risks', ICON.risk, false]);
+    var unread = chatUnread();
+    nav.push(['chat/team', 'Chat' + (unread ? '<b class="nbadge">' + (unread > 9 ? '9+' : unread) + '</b>' : ''), ICON.chat, S.mode === 'chat']);
     nav.push(['more', 'More', ICON.more, S.mode === 'more' || S.mode === 'admin' || (S.mode === 'input' && ['update', 'activity'].indexOf(S.tab) < 0)]);
     var tabs = S.mode === 'more' ? [] : tabsFor(S.mode);
     app.innerHTML =
       '<header class="bar"><div class="wrap">' +
         '<div class="bar-row">' +
           '<div class="brand"><div class="logo">S</div><div><b>' + esc(S.settings.appName || 'SEGARA PMO') + '</b><span>' + esc(S.me.role) + (S.me.role === 'Editor' ? ' · streams ' + esc(S.me.streams.join(', ') || 'none') : '') + '</span></div></div>' +
-          '<nav class="modes" aria-label="Modes">' + modes.map(function (m) { return '<a href="#/' + m + '"' + (S.mode === m ? ' aria-current="page"' : '') + '>' + MODES[m].label + '</a>'; }).join('') + '</nav>' +
+          '<nav class="modes" aria-label="Modes">' + modes.map(function (m) { return '<a href="#/' + m + '"' + (S.mode === m ? ' aria-current="page"' : '') + '>' + MODES[m].label + (m === 'chat' && unread ? '<b class="nbadge">' + (unread > 9 ? '9+' : unread) + '</b>' : '') + '</a>'; }).join('') + '</nav>' +
           '<div class="sync sync-wide"><i class="dot ' + st[0] + '"></i><span>' + esc(st[1]) + '</span></div>' +
           '<button class="btn sm" type="button" data-act="refresh" aria-label="Refresh data">Refresh</button>' +
           '<a class="acct acct-wide" href="#/more"><span class="avatar">' + esc(initials(S.me.name || S.me.email)) + '</span><span>' + esc(S.me.name || S.me.email) + '</span></a>' +
@@ -258,6 +265,7 @@
       savebar() +
       '<nav class="bottom" aria-label="Main" style="--n:' + nav.length + '">' + nav.map(function (n) { return '<a href="#/' + n[0] + '"' + (n[3] ? ' aria-current="page"' : '') + '>' + n[2] + n[1] + '</a>'; }).join('') + '</nav>' +
       (S.detail ? detailSheet() : '');
+    document.querySelectorAll('.chatlog').forEach(function (el2) { var o = logs[el2.id]; el2.scrollTop = !o || o.bottom ? el2.scrollHeight : o.top; });
     var el = keep ? document.getElementById(keep) : null;
     if (el) { el.focus(); if (pos != null && el.setSelectionRange) { try { el.setSelectionRange(pos, pos); } catch (e) { /* not a text field */ } } }
   }
@@ -296,7 +304,7 @@
     var fn = {
       overview: vOverview, list: vList, timeline: vTimeline, risks: vRisks,
       update: vUpdate, activity: vActivity, streams: vStreams, riskform: vRiskForm, mylog: vLog,
-      users: vUsers, log: vLog, deleted: vDeleted, settings: vSettings
+      users: vUsers, log: vLog, deleted: vDeleted, settings: vSettings, team: vTeam, ask: vAsk
     }[S.tab];
     if (S.mode === 'more') return vMore();
     return fn ? fn() : vOverview();
@@ -417,7 +425,7 @@
 
   /* Detail sheet (read view for anyone; Edit button when allowed) */
   function detailSheet() {
-    var d = S.detail, rows = [], title = '', edit = '';
+    var d = S.detail, rows = [], title = '', edit = '', comments = '';
     if (d.kind === 'act') {
       var a = S.acts.filter(function (x) { return x.id === d.id; })[0]; if (!a) return '';
       var s = streamOf(a.stream);
@@ -426,6 +434,7 @@
         ['Start', esc(a.start || '—')], ['Target end', esc(a.end || '—')], ['Complete', a.pct + '%'], ['Depends on', esc(a.dep || '—')], ['Description', esc(a.desc || '—')], ['Notes', esc(a.notes || '—')],
         ['Last updated', esc((a.updated || '—') + (a.updatedBy ? ' by ' + a.updatedBy : ''))]];
       if (canEdit(a.stream)) edit = '<button class="btn primary" type="button" data-edit-act="' + esc(a.id) + '">Edit</button>';
+      comments = '<section class="comments"><h3>Comments</h3>' + chatPanel('act:' + a.id, 'Comment on ' + a.id + '…') + '</section>';
     } else {
       var r = S.risks.filter(function (x) { return x.id === d.id; })[0]; if (!r) return '';
       title = r.id + ' · ' + r.type;
@@ -436,7 +445,7 @@
     return '<div class="overlay" data-act="closeDetail"><div class="sheet" role="dialog" aria-modal="true" aria-label="' + esc(title) + '">' +
       '<div class="panel-head"><h2>' + esc(title) + '</h2><button class="btn sm" type="button" data-act="closeDetail">Close</button></div>' +
       '<dl>' + rows.map(function (x) { return '<dt>' + x[0] + '</dt><dd>' + (x[0] === 'Stream' && d.kind === 'act' ? esc(x[1]) : x[1]) + '</dd>'; }).join('') + '</dl>' +
-      (edit ? '<div class="actions">' + edit + '</div>' : '') + '</div></div>';
+      (edit ? '<div class="actions">' + edit + '</div>' : '') + comments + '</div></div>';
   }
 
   /* ---------------- Input: weekly update ---------------- */
@@ -733,9 +742,170 @@
       '<div class="panel"><div class="more-list"><button type="button" data-act="refresh">Refresh data</button>' + (DEMO ? '<button type="button" data-act="resetDemo">Reset demo data</button>' : '<button type="button" data-act="signOut">Sign out</button>') + '</div></div>';
   }
 
+  /* ---------------- Chat: comments, team rooms, AI assistant ---------------- */
+  function chatLast(thread) { var l = S.chat.threads[thread]; return l && l.length ? l[l.length - 1].id : ''; }
+  function chatIsUnread(thread) {
+    var t = S.chat.sum && S.chat.sum[thread];
+    return !!(t && t.by !== 'you' && t.last > (S.chat.seen[thread] || ''));
+  }
+  function chatUnread() {
+    if (!S.chat.sum) return 0;
+    return Object.keys(S.chat.sum).filter(function (k) { return chatValidThread(k) && chatIsUnread(k); }).length;
+  }
+  function chatValidThread(k) {
+    if (k === 'room:all') return true;
+    var m = k.match(/^room:s(\d+)$/); if (m) return !!streamOf(m[1]);
+    m = k.match(/^act:(.+)$/); return !!(m && S.acts.some(function (a) { return a.id === m[1]; }));
+  }
+  function markSeen(thread) {
+    var last = chatLast(thread);
+    if (last && last > (S.chat.seen[thread] || '')) { S.chat.seen[thread] = last; store(LS.seen, S.chat.seen); }
+  }
+  function chatSummary() {
+    return api('chatSummary').then(function (r) {
+      var before = JSON.stringify([S.chat.sum, S.chat.ai]);
+      S.chat.sum = r.threads || {}; S.chat.ai = !!r.ai;
+      if (JSON.stringify([S.chat.sum, S.chat.ai]) !== before) render();
+    }).catch(function () { /* summary is best effort */ });
+  }
+  function loadThread(thread, force) {
+    if (S.chat.loading[thread]) return;
+    var have = S.chat.threads[thread];
+    if (have && !force) return;
+    S.chat.loading[thread] = true;
+    api('chatList', { thread: thread, after: have ? chatLast(thread) : '' }).then(function (r) {
+      S.chat.loading[thread] = false; S.chat.err[thread] = null;
+      var cur = S.chat.threads[thread] || [];
+      var ids = {}; cur.forEach(function (m) { ids[m.id] = 1; });
+      var fresh = (r.messages || []).filter(function (m) { return !ids[m.id]; });
+      S.chat.threads[thread] = cur.concat(fresh);
+      if (!have || fresh.length) render();
+    }).catch(function (e) { S.chat.loading[thread] = false; S.chat.err[thread] = e && e.message === 'Unknown action.' ? 'Chat is not switched on yet: the admin needs to add Chat.gs in Apps Script and deploy a new version.' : (e && e.message || 'Could not load messages.'); if (!S.chat.threads[thread]) S.chat.threads[thread] = []; render(); });
+  }
+  function openThreads() {
+    var t = [];
+    if (S.mode === 'chat' && S.tab === 'team') t.push(S.chat.room);
+    if (S.detail && S.detail.kind === 'act') t.push('act:' + S.detail.id);
+    return t;
+  }
+  function fmtText(s) {
+    return esc(s).replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>').replace(/(^|\n)[-•] /g, '$1• ').replace(/\n/g, '<br>');
+  }
+  function when(t) {
+    if (!t) return '';
+    var d = t.slice(0, 10), today = todayIso();
+    return (d === today ? '' : shortD(d) + ' ') + t.slice(11, 16);
+  }
+  function chatPanel(thread, placeholder) {
+    var list = S.chat.threads[thread];
+    if (!list) loadThread(thread);
+    var id = 'log-' + thread.replace(/[^a-z0-9]/gi, '-');
+    var body;
+    if (!list) body = '<div class="skel" style="width:60%"></div><div class="skel" style="width:40%"></div>';
+    else if (!list.length) body = '<div class="empty">No messages yet. Start the conversation.</div>';
+    else body = list.map(function (m) {
+      var mine = S.me && m.email === S.me.email;
+      var canDel = !m.deleted && (mine || isAdmin());
+      return '<div class="msg-row' + (mine ? ' mine' : '') + '"><div class="bubble">' +
+        '<div class="mhead"><b>' + esc(mine ? 'You' : (m.name || m.email)) + '</b><span>' + esc(when(m.time)) + '</span>' +
+        (canDel ? '<button type="button" class="mdel" data-chat-del="' + esc(m.id) + '" data-thread="' + esc(thread) + '" aria-label="Delete message">×</button>' : '') + '</div>' +
+        (m.deleted ? '<div class="mtext muted"><i>Message deleted</i></div>' : '<div class="mtext">' + fmtText(m.text) + '</div>') + '</div></div>';
+    }).join('');
+    if (list) markSeen(thread);
+    var err = S.chat.err[thread];
+    var tid = 'chatText-' + thread.replace(/[^a-z0-9]/gi, '-');
+    return '<div class="chat"><div class="chatlog" id="' + id + '">' + body + '</div>' +
+      (err ? '<p class="msg err">' + esc(err) + '</p>' : '') +
+      (DEMO || !S.offline ? '<form class="composer" data-chat-form="' + esc(thread) + '"><label class="sr" for="' + tid + '">Message</label>' +
+        '<textarea id="' + tid + '" rows="1" maxlength="2000" data-chat-input="' + esc(thread) + '" placeholder="' + esc(placeholder || 'Write a message…') + '">' + esc(S.chat.drafts[thread] || '') + '</textarea>' +
+        '<button class="btn primary" type="submit"' + (S.chat.sending[thread] ? ' disabled' : '') + '>Send</button></form>' : '<p class="hint">You\'re offline. Messages can be sent once you\'re back online.</p>') +
+      '</div>';
+  }
+  function sendChat(thread) {
+    var text = String(S.chat.drafts[thread] || '').trim();
+    if (!text || S.chat.sending[thread]) return;
+    S.chat.sending[thread] = true; render();
+    api('chatPost', { thread: thread, text: text }).then(function (r) {
+      S.chat.sending[thread] = false; S.chat.drafts[thread] = ''; S.chat.err[thread] = null;
+      var l = S.chat.threads[thread] || (S.chat.threads[thread] = []);
+      if (!l.some(function (m) { return m.id === r.message.id; })) l.push(r.message);
+      S.chat.sum = S.chat.sum || {};
+      var t = S.chat.sum[thread] || (S.chat.sum[thread] = { n: 0 });
+      t.n++; t.last = r.message.id; t.at = r.message.time; t.by = 'you';
+      markSeen(thread); render();
+    }).catch(function (e) { S.chat.sending[thread] = false; if (!handleErr(e, 'chat')) S.chat.err[thread] = e && e.message || 'Could not send.'; render(); });
+  }
+  function roomName(k) { if (k === 'room:all') return 'Everyone'; var s = streamOf(k.slice(6)); return s ? s.no + '. ' + s.name : k; }
+  function vTeam() {
+    var rooms = ['room:all'].concat(S.streams.map(function (s) { return 'room:s' + s.no; }));
+    if (rooms.indexOf(S.chat.room) < 0) S.chat.room = 'room:all';
+    var sum = S.chat.sum || {};
+    var acts = Object.keys(sum).filter(function (k) { return /^act:/.test(k) && chatValidThread(k); })
+      .sort(function (a, b) { return sum[b].last > sum[a].last ? 1 : -1; }).slice(0, 12);
+    function roomBtn(k) {
+      var t = sum[k], sw = k === 'room:all' ? 'var(--accent)' : colorOf(k.slice(6));
+      return '<button type="button" class="li room' + (k === S.chat.room ? ' on' : '') + '" data-room="' + esc(k) + '"><span class="swatch" style="background:' + esc(sw) + '"></span>' +
+        '<span class="t"><div>' + esc(roomName(k)) + '</div><div>' + (t ? t.n + ' message' + (t.n === 1 ? '' : 's') + ' · last ' + esc(when(t.at)) : 'No messages yet') + '</div></span>' +
+        (chatIsUnread(k) ? '<span class="pill accent">new</span>' : '') + '</button>';
+    }
+    return '<div class="page-head"><h1>Team chat</h1><span class="hint">Everyone with access can read and write here. Messages are saved in the Google Sheet.</span></div>' +
+      '<div class="split chat-split"><div class="side">' +
+        '<section class="panel rooms-panel"><h2>Rooms</h2><div class="list">' + rooms.map(roomBtn).join('') + '</div></section>' +
+        '<section class="panel"><h2>Latest comments on sub-activities</h2><div class="list">' +
+          (acts.length ? acts.map(function (k) {
+            var id = k.slice(4), a = S.acts.filter(function (x) { return x.id === id; })[0], t = sum[k];
+            return '<button type="button" class="li" data-detail="' + esc(id) + '"><span class="swatch" style="background:' + esc(colorOf(a.stream)) + '"></span><span class="t"><div><span class="mono muted">' + esc(id) + '</span> ' + esc(a.name) + '</div><div>' + t.n + ' comment' + (t.n === 1 ? '' : 's') + ' · ' + esc(t.by) + ' · ' + esc(when(t.at)) + '</div></span>' + (chatIsUnread(k) ? '<span class="pill accent">new</span>' : '') + '</button>';
+          }).join('') : '<div class="empty">No comments yet. Open any sub-activity to comment on it.</div>') +
+        '</div></section></div>' +
+        '<section class="main panel"><div class="panel-head"><h2>' + esc(roomName(S.chat.room)) + '</h2>' +
+          '<label class="sr" for="roomSel">Room</label><select id="roomSel" class="roomsel">' + rooms.map(function (k) { return '<option value="' + esc(k) + '"' + (k === S.chat.room ? ' selected' : '') + '>' + esc(roomName(k)) + (chatIsUnread(k) ? ' •' : '') + '</option>'; }).join('') + '</select></div>' + chatPanel(S.chat.room, 'Message ' + roomName(S.chat.room) + '…') + '</section>' +
+      '</div>';
+  }
+  var AI_SUGGEST = ["What's overdue or at risk right now?", 'What is due in the next 2 weeks?', 'Summarise stream 1 for my boss', 'Which activities have no owner yet?', 'What depends on the OJK license?'];
+  function vAsk() {
+    var h = S.chat.aiHist;
+    if (!S.chat.sum) chatSummary();
+    var off = S.chat.sum && !S.chat.ai && !DEMO;
+    return '<div class="page-head"><h1>Ask AI</h1><span class="hint">Ask about the plan in English or Bahasa Indonesia. Answers use the live data; the assistant can\'t change anything.</span></div>' +
+      (off ? '<div class="banner warn"><p><b>The AI assistant is not switched on yet.</b> ' + (isAdmin() ? 'In Apps Script, open Project Settings › Script properties and add <span class="mono">ANTHROPIC_API_KEY</span> with a key from console.anthropic.com.' : 'Ask your SEGARA PMO admin to switch it on.') + '</p></div>' : '') +
+      '<section class="panel ai"><div class="chatlog" id="log-ai">' +
+        (h.length ? h.map(function (m) {
+          return '<div class="msg-row' + (m.role === 'user' ? ' mine' : '') + '"><div class="bubble' + (m.role === 'assistant' ? ' ai-b' : '') + '"><div class="mhead"><b>' + (m.role === 'user' ? 'You' : 'SEGARA AI') + '</b></div><div class="mtext">' + fmtText(m.text) + '</div></div></div>';
+        }).join('') : '<div class="empty">Try one of these:</div>') +
+        (S.chat.aiBusy ? '<div class="msg-row"><div class="bubble ai-b"><div class="mtext muted">Thinking…</div></div></div>' : '') +
+      '</div>' +
+      (!h.length ? '<div class="chips">' + AI_SUGGEST.map(function (q) { return '<button type="button" class="chip" data-ai-q="' + esc(q) + '">' + esc(q) + '</button>'; }).join('') + '</div>' : '') +
+      (S.chat.aiErr ? '<p class="msg err">' + esc(S.chat.aiErr) + '</p>' : '') +
+      '<form class="composer" id="aiForm"><label class="sr" for="aiText">Question</label><textarea id="aiText" rows="1" maxlength="1500" placeholder="Ask about the plan…">' + esc(S.chat.drafts.ai || '') + '</textarea>' +
+        '<button class="btn primary" type="submit"' + (S.chat.aiBusy || off ? ' disabled' : '') + '>Ask</button></form>' +
+      (h.length ? '<div class="actions"><button class="btn sm" type="button" data-act="aiClear">New conversation</button></div>' : '') +
+      '</section>';
+  }
+  function askAI(q) {
+    q = String(q || '').trim();
+    if (!q || S.chat.aiBusy) return;
+    var hist = S.chat.aiHist.slice(-6);
+    S.chat.aiHist.push({ role: 'user', text: q }); S.chat.drafts.ai = ''; S.chat.aiBusy = true; S.chat.aiErr = null; render();
+    var p = DEMO ? new Promise(function (res) { setTimeout(function () { res({ answer: demoAnswer(q) }); }, 600); }) : api('askAI', { question: q, history: hist });
+    p.then(function (r) { S.chat.aiBusy = false; S.chat.aiHist.push({ role: 'assistant', text: r.answer }); render(); })
+      .catch(function (e) { S.chat.aiBusy = false; S.chat.aiHist.pop(); S.chat.drafts.ai = q; if (!handleErr(e, 'ai')) S.chat.aiErr = e && e.message === 'Unknown action.' ? 'Chat is not switched on yet: the admin needs to add Chat.gs in Apps Script.' : (e && e.message || 'The assistant could not answer.'); if (e && e.code === 'ai_off') S.chat.ai = false; render(); });
+  }
+  function demoAnswer(q) {
+    var t = todayIso(), late = S.acts.filter(function (a) { return ['Overdue', 'Late Start', 'At Risk', 'Blocked'].indexOf(a.health) > -1; });
+    return '**Demo answer** (the real assistant reads your live plan).\n\n' + (late.length ? late.length + ' sub-activities need attention today (' + t + '):\n' + late.slice(0, 5).map(function (a) { return '- ' + a.id + ' ' + a.name + ': ' + a.health; }).join('\n') : 'Nothing is overdue or at risk right now.');
+  }
+  // Keep chat fresh: open conversations every 10 s, the unread summary every 45 s.
+  var chatTick = 0;
+  setInterval(function () {
+    if (!S.loaded || document.visibilityState !== 'visible' || S.offline) return;
+    chatTick++;
+    openThreads().forEach(function (t) { if (S.chat.threads[t]) loadThread(t, true); });
+    if (chatTick % 4 === 1) chatSummary();
+  }, DEMO ? 4000 : 10000);
+
   /* ---------------- events ---------------- */
   document.addEventListener('click', function (e) {
-    var t = e.target.closest('[data-act],[data-detail],[data-risk],[data-stream],[data-pick],[data-pick-stream],[data-pick-risk],[data-pick-user],[data-edit-act],[data-edit-risk],[data-color],[data-role],[data-restore]');
+    var t = e.target.closest('[data-act],[data-detail],[data-risk],[data-stream],[data-pick],[data-pick-stream],[data-pick-risk],[data-pick-user],[data-edit-act],[data-edit-risk],[data-color],[data-role],[data-restore],[data-room],[data-chat-del],[data-ai-q]');
     if (!t) return;
     var a = t.getAttribute('data-act');
     if (a === 'closeDetail') { if (e.target === t || t.tagName === 'BUTTON') { S.detail = null; render(); } return; }
@@ -753,6 +923,13 @@
     if (a === 'delStream') { S.confirm = 'stream'; return render(); }
     if (a === 'delRisk') { S.confirm = 'risk'; return render(); }
     if (a === 'reloadLog') { S.log = null; return render(); }
+    if (a === 'aiClear') { S.chat.aiHist = []; S.chat.aiErr = null; return render(); }
+    if (t.hasAttribute('data-room')) { S.chat.room = t.getAttribute('data-room'); render(); var lg = document.querySelector('.main .chatlog'); if (lg && window.innerWidth < 761) lg.scrollIntoView({ block: 'start', behavior: 'smooth' }); return; }
+    if (t.hasAttribute('data-ai-q')) return askAI(t.getAttribute('data-ai-q'));
+    if (t.hasAttribute('data-chat-del')) {
+      var mid = t.getAttribute('data-chat-del'), th = t.getAttribute('data-thread');
+      return api('chatDelete', { id: mid }).then(function () { (S.chat.threads[th] || []).forEach(function (m) { if (m.id === mid) { m.deleted = true; m.text = ''; } }); toast('Message deleted'); render(); }).catch(function (er) { if (!handleErr(er, 'chat')) toast(er && er.message || 'Could not delete.'); });
+    }
     if (a === 'delActYes') {
       var act = S.acts.filter(function (x) { return x.id === S.sel.act; })[0];
       S.confirm = null;
@@ -796,6 +973,9 @@
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && e.target.matches && e.target.matches('tr.row, .g-row[data-detail]')) e.target.click();
     if (e.key === 'Escape' && S.detail) { S.detail = null; render(); }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.target.matches && e.target.matches('.composer textarea') && window.matchMedia('(hover: hover)').matches) {
+      e.preventDefault(); var f = e.target.form; if (f) f.requestSubmit ? f.requestSubmit() : f.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+    }
   });
   document.addEventListener('input', function (e) {
     var t = e.target, id = t.getAttribute('data-id'), k = t.getAttribute('data-k');
@@ -808,6 +988,9 @@
       if (sb && html) sb.outerHTML = html; else if (!sb && html) $('#main').insertAdjacentHTML('afterend', html); else if (sb && !html) sb.remove();
       return;
     }
+    if (t.hasAttribute('data-chat-input')) { S.chat.drafts[t.getAttribute('data-chat-input')] = t.value; return; }
+    if (t.id === 'aiText') { S.chat.drafts.ai = t.value; return; }
+    if (t.id === 'roomSel') { S.chat.room = t.value; return render(); }
     var map = { fStream: 'stream', fStatus: 'status', fHealth: 'health', fOwner: 'owner', fQ: 'q' };
     if (map[t.id]) { S.f[map[t.id]] = t.value; store(LS.filters, S.f); return render(); }
     if (t.id === 'fDone') { S.f.done = t.checked; store(LS.filters, S.f); return render(); }
@@ -819,6 +1002,8 @@
   document.addEventListener('submit', function (e) {
     e.preventDefault();
     var id = e.target.id;
+    if (e.target.hasAttribute('data-chat-form')) return sendChat(e.target.getAttribute('data-chat-form'));
+    if (id === 'aiForm') return askAI(val('aiText'));
     if (id === 'actForm') return saveActivity();
     if (id === 'streamForm') return saveStream();
     if (id === 'riskForm') return saveRisk();
@@ -838,6 +1023,7 @@
 
   /* ---------------- boot ---------------- */
   var f0 = load(LS.filters); if (f0) S.f = Object.assign(S.f, f0, { q: '' });
+  S.chat.seen = load(LS.seen) || {};
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(function () { /* app still works without offline cache */ });
   if (DEMO) { S.auth = { token: 'demo', exp: 9e9, email: window.SEGARA_DEMO.email(), name: 'Demo' }; start(); }
   else {
