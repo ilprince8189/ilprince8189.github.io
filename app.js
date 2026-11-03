@@ -865,9 +865,9 @@
   function vAsk() {
     var h = S.chat.aiHist;
     if (!S.chat.sum) chatSummary();
-    var off = S.chat.sum && !S.chat.ai && !DEMO;
+    if ((!S.chat.ai && !DEMO) || /[?&]claude\b/.test(location.search)) return vAskClaude();
+    var off = false;
     return '<div class="page-head"><h1>Ask AI</h1><span class="hint">Ask about the plan in English or Bahasa Indonesia. Answers use the live data; the assistant can\'t change anything.</span></div>' +
-      (off ? '<div class="banner warn"><p><b>The AI assistant is not switched on yet.</b> ' + (isAdmin() ? 'In Apps Script, open Project Settings › Script properties and add <span class="mono">ANTHROPIC_API_KEY</span> with a key from console.anthropic.com.' : 'Ask your SEGARA PMO admin to switch it on.') + '</p></div>' : '') +
       '<section class="panel ai"><div class="chatlog" id="log-ai">' +
         (h.length ? h.map(function (m) {
           return '<div class="msg-row' + (m.role === 'user' ? ' mine' : '') + '"><div class="bubble' + (m.role === 'assistant' ? ' ai-b' : '') + '"><div class="mhead"><b>' + (m.role === 'user' ? 'You' : 'SEGARA AI') + '</b></div><div class="mtext">' + fmtText(m.text) + '</div></div></div>';
@@ -879,6 +879,60 @@
       '<form class="composer" id="aiForm"><label class="sr" for="aiText">Question</label><textarea id="aiText" rows="1" maxlength="1500" placeholder="Ask about the plan…">' + esc(S.chat.drafts.ai || '') + '</textarea>' +
         '<button class="btn primary" type="submit"' + (S.chat.aiBusy || off ? ' disabled' : '') + '>Ask</button></form>' +
       (h.length ? '<div class="actions"><button class="btn sm" type="button" data-act="aiClear">New conversation</button></div>' : '') +
+      '</section>';
+  }
+
+  /* Free mode: hand the question and a snapshot of the plan to Claude (claude.ai or the Claude app), using the person's own Claude account. */
+  function planSnapshot() {
+    var open = S.acts.filter(function (a) { return a.status !== 'Completed'; });
+    var lines = ['PLAN DATA (' + todayIso() + '): ' + S.acts.length + ' sub-activities, ' + (S.acts.length - open.length) + ' completed. Open items below as "ID name: start to end; then only what differs from the defaults (status Not Started, 0% done, health On Track, owner TBD)".'];
+    S.streams.forEach(function (st) {
+      var items = open.filter(function (a) { return a.stream === st.no; });
+      if (!items.length) return;
+      lines.push('Stream ' + st.no + ' ' + st.name + ':');
+      items.forEach(function (a) {
+        var x = [];
+        if (a.owner && a.owner !== 'TBD') x.push('owner ' + a.owner);
+        if (a.status !== 'Not Started') x.push(a.status);
+        if (a.pct) x.push(a.pct + '%');
+        if (a.health && a.health !== 'On Track') x.push(a.health);
+        if (a.dep) x.push('needs ' + a.dep);
+        lines.push(a.id + ' ' + a.name + ': ' + (a.start || '?') + ' to ' + (a.end || '?') + (x.length ? '; ' + x.join(', ') : ''));
+      });
+    });
+    var risks = S.risks.filter(function (r) { return r.status !== 'Closed'; });
+    if (risks.length) { lines.push('Open risks:'); risks.forEach(function (r) { lines.push(r.id + ' (stream ' + r.stream + ', ' + (r.sev || r.impact) + '): ' + r.desc + (r.owner && r.owner !== 'TBD' ? '; owner ' + r.owner : '') + (r.due ? '; due ' + r.due : '')); }); }
+    return lines.join('\n');
+  }
+  function claudePrompt(q) {
+    return 'You are helping with SEGARA PMO, the launch plan for SEGARA, an Indonesian pawnshop (gadai) business. Answer my question using the plan data below. Be concise, put sub-activity IDs in front of names, and reply in the language I write in.\n\nMy question: ' + q + '\n\n' + planSnapshot();
+  }
+  function openInClaude(q) {
+    q = String(q || '').trim();
+    if (!q) { S.chat.aiErr = 'Type a question first.'; return render(); }
+    var full = claudePrompt(q);
+    var url = 'https://claude.ai/new?q=' + encodeURIComponent(full);
+    var copied = false;
+    try { if (navigator.clipboard) { navigator.clipboard.writeText(full).catch(function () { /* clipboard not allowed */ }); copied = true; } } catch (e) { copied = false; }
+    if (url.length > 8000) url = 'https://claude.ai/new?q=' + encodeURIComponent('My SEGARA PMO question and plan data are on my clipboard. Please wait for me to paste them.');
+    window.open(url, '_blank', 'noopener');
+    S.chat.aiHist.push({ role: 'user', text: q });
+    S.chat.drafts.ai = ''; S.chat.aiErr = null;
+    S.chat.handoff = /clipboard/.test(decodeURIComponent(url)) ? 'paste' : 'sent';
+    render();
+  }
+  function vAskClaude() {
+    var past = S.chat.aiHist.filter(function (m) { return m.role === 'user'; }).slice(-5).reverse();
+    return '<div class="page-head"><h1>Ask AI</h1><span class="hint">Opens Claude with your question and today\'s plan data. Uses your own Claude account (the free plan works).</span></div>' +
+      '<section class="panel ai">' +
+        (S.chat.handoff === 'paste' ? '<div class="banner warn"><p>The plan was too long for a link, so it\'s <b>copied to your clipboard</b>. In Claude, paste it (Ctrl+V, or long-press › Paste on a phone) and send.</p></div>' :
+          S.chat.handoff === 'sent' ? '<div class="banner"><p>Opened in Claude. If Claude didn\'t open, allow pop-ups for this app, or sign in at claude.ai first.</p></div>' : '') +
+        '<div class="chips">' + AI_SUGGEST.map(function (q) { return '<button type="button" class="chip" data-claude-q="' + esc(q) + '">' + esc(q) + '</button>'; }).join('') + '</div>' +
+        (S.chat.aiErr ? '<p class="msg err">' + esc(S.chat.aiErr) + '</p>' : '') +
+        '<form class="composer" id="claudeForm"><label class="sr" for="aiText">Question</label><textarea id="aiText" rows="2" maxlength="1500" placeholder="Ask about the plan, then open in Claude…">' + esc(S.chat.drafts.ai || '') + '</textarea>' +
+          '<button class="btn primary" type="submit">Open in Claude ↗</button></form>' +
+        (past.length ? '<div><h3 style="margin:6px 0">Recent questions</h3><div class="list">' + past.map(function (m) { return '<button type="button" class="li" data-claude-q="' + esc(m.text) + '"><span></span><span class="t"><div>' + esc(m.text) + '</div><div>Ask again in Claude</div></span><span aria-hidden="true">↗</span></button>'; }).join('') + '</div></div>' : '') +
+        '<p class="hint">Claude sees only what this app sends: your question and the plan (sub-activities, owners, dates, open risks). It can\'t change the plan; make changes here in the app.</p>' +
       '</section>';
   }
   function askAI(q) {
@@ -905,7 +959,7 @@
 
   /* ---------------- events ---------------- */
   document.addEventListener('click', function (e) {
-    var t = e.target.closest('[data-act],[data-detail],[data-risk],[data-stream],[data-pick],[data-pick-stream],[data-pick-risk],[data-pick-user],[data-edit-act],[data-edit-risk],[data-color],[data-role],[data-restore],[data-room],[data-chat-del],[data-ai-q]');
+    var t = e.target.closest('[data-act],[data-detail],[data-risk],[data-stream],[data-pick],[data-pick-stream],[data-pick-risk],[data-pick-user],[data-edit-act],[data-edit-risk],[data-color],[data-role],[data-restore],[data-room],[data-chat-del],[data-ai-q],[data-claude-q]');
     if (!t) return;
     var a = t.getAttribute('data-act');
     if (a === 'closeDetail') { if (e.target === t || t.tagName === 'BUTTON') { S.detail = null; render(); } return; }
@@ -926,6 +980,7 @@
     if (a === 'aiClear') { S.chat.aiHist = []; S.chat.aiErr = null; return render(); }
     if (t.hasAttribute('data-room')) { S.chat.room = t.getAttribute('data-room'); render(); var lg = document.querySelector('.main .chatlog'); if (lg && window.innerWidth < 761) lg.scrollIntoView({ block: 'start', behavior: 'smooth' }); return; }
     if (t.hasAttribute('data-ai-q')) return askAI(t.getAttribute('data-ai-q'));
+    if (t.hasAttribute('data-claude-q')) return openInClaude(t.getAttribute('data-claude-q'));
     if (t.hasAttribute('data-chat-del')) {
       var mid = t.getAttribute('data-chat-del'), th = t.getAttribute('data-thread');
       return api('chatDelete', { id: mid }).then(function () { (S.chat.threads[th] || []).forEach(function (m) { if (m.id === mid) { m.deleted = true; m.text = ''; } }); toast('Message deleted'); render(); }).catch(function (er) { if (!handleErr(er, 'chat')) toast(er && er.message || 'Could not delete.'); });
@@ -1004,6 +1059,7 @@
     var id = e.target.id;
     if (e.target.hasAttribute('data-chat-form')) return sendChat(e.target.getAttribute('data-chat-form'));
     if (id === 'aiForm') return askAI(val('aiText'));
+    if (id === 'claudeForm') return openInClaude(val('aiText'));
     if (id === 'actForm') return saveActivity();
     if (id === 'streamForm') return saveStream();
     if (id === 'riskForm') return saveRisk();
