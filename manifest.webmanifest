@@ -1,7 +1,7 @@
 {
   "id": "./",
-  "name": "SEGARA PMO",
-  "short_name": "SEGARA PMO",
+  "name": "PMO SEGERA",
+  "short_name": "PMO SEGERA",
   "description": "SEGARA pawnshop launch programme tracker: streams, sub-activities, timeline, risks and weekly updates.",
   "start_url": "./#/dashboard/overview",
   "scope": "./",

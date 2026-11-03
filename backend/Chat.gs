@@ -1,5 +1,5 @@
 /**
- * SEGARA PMO: chat. Comments on each sub-activity, team chat rooms, and an AI assistant.
+ * PMO SEGERA: chat. Comments on each sub-activity, team chat rooms, and an AI assistant.
  *
  * Add this as a new file in the same Apps Script project as Code.gs
  * (Files + > Script, name it "Chat"). It must be listed BELOW Code.gs.
@@ -177,7 +177,7 @@ function aiSystem_(user) {
   lines.push('', 'RISKS AND ISSUES (id | stream | type | description | severity | owner | due | status):');
   risks.forEach(function (r) { lines.push([r.id, r.stream, r.type, r.desc.slice(0, 200), r.sev, r.owner || '-', r.due || '-', r.status].join(' | ')); });
   return [
-    'You are the assistant inside SEGARA PMO, the programme tracker for launching SEGARA, an Indonesian pawnshop (gadai) business: OJK licensing, branches, software, funding, sales and handphone sales.',
+    'You are the assistant inside PMO SEGERA, the programme tracker for launching SEGARA, an Indonesian pawnshop (gadai) business: OJK licensing, branches, software, funding, sales and handphone sales.',
     'Today is ' + today + ' (Asia/Jakarta). You are talking to ' + (user.name || user.email) + ', whose role is ' + user.role + '.',
     'Answer from the programme data below. Be concise and practical: short paragraphs or short lists, IDs in front of sub-activities (for example "2.3 Lease negotiation"). Dates as "12 Dec 2026".',
     'Health rules: Overdue = target end passed and not completed; Late Start = not started after its start date; At Risk = % complete more than ' + Math.round(th * 100) + ' points behind plan.',

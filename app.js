@@ -1,4 +1,4 @@
-/* SEGARA PMO — installable app (Dashboard, Input, Admin).
+/* PMO SEGERA — installable app (Dashboard, Input, Admin).
  * Talks to the Apps Script back end with a Google ID token. No framework: render functions build HTML from state. */
 (function () {
   'use strict';
@@ -20,12 +20,13 @@
   };
 
   var S = {
-    auth: null, me: null, settings: { threshold: 0.2, appName: 'SEGARA PMO' }, streams: [], acts: [], risks: [], users: [],
+    auth: null, me: null, settings: { threshold: 0.2, appName: 'PMO SEGERA' }, streams: [], acts: [], risks: [], users: [],
     loaded: false, offline: false, busy: false, lastSync: null, err: null, signinMsg: '',
     mode: 'dashboard', tab: 'overview',
     f: { stream: '', status: '', health: '', owner: '', q: '', done: false },
     edits: {}, saved: {}, sel: { act: null, stream: null, risk: null, user: null }, preset: { stream: null },
     msgs: {}, log: null, logQ: '', deleted: null, detail: null, confirm: null, draft: {},
+    files: { counts: null, lists: {}, loading: {}, busy: {}, err: {}, max: 10485760 },
     chat: { sum: null, ai: false, threads: {}, loading: {}, room: 'room:all', seen: {}, drafts: {}, err: {}, aiHist: [], aiBusy: false, aiErr: null, sending: {} }
   };
 
@@ -172,7 +173,7 @@
       S.offline = false; S.err = null; S.lastSync = Date.now(); S.busy = false;
       store(LS.cache, { email: S.auth.email, at: S.lastSync, data: d });
       render();
-      chatSummary();
+      chatSummary(); fileCounts();
     }).catch(function (e) {
       S.busy = false;
       if (handleErr(e)) return;
@@ -251,7 +252,7 @@
     app.innerHTML =
       '<header class="bar"><div class="wrap">' +
         '<div class="bar-row">' +
-          '<div class="brand"><div class="logo">S</div><div><b>' + esc(S.settings.appName || 'SEGARA PMO') + '</b><span>' + esc(S.me.role) + (S.me.role === 'Editor' ? ' · streams ' + esc(S.me.streams.join(', ') || 'none') : '') + '</span></div></div>' +
+          '<div class="brand"><div class="logo">S</div><div><b>' + esc(S.settings.appName || 'PMO SEGERA') + '</b><span>' + esc(S.me.role) + (S.me.role === 'Editor' ? ' · streams ' + esc(S.me.streams.join(', ') || 'none') : '') + '</span></div></div>' +
           '<nav class="modes" aria-label="Modes">' + modes.map(function (m) { return '<a href="#/' + m + '"' + (S.mode === m ? ' aria-current="page"' : '') + '>' + MODES[m].label + (m === 'chat' && unread ? '<b class="nbadge">' + (unread > 9 ? '9+' : unread) + '</b>' : '') + '</a>'; }).join('') + '</nav>' +
           '<div class="sync sync-wide"><i class="dot ' + st[0] + '"></i><span>' + esc(st[1]) + '</span></div>' +
           '<button class="btn sm" type="button" data-act="refresh" aria-label="Refresh data">Refresh</button>' +
@@ -281,11 +282,11 @@
   }
   function renderSignIn(app) {
     app.innerHTML = '<div class="signin"><div class="signin-card">' +
-      '<div class="logo">S</div><h1>SEGARA PMO</h1>' +
+      '<div class="logo">S</div><h1>PMO SEGERA</h1>' +
       '<p>Track the pawnshop launch: every stream, sub-activity, risk and date in one place.</p>' +
       (S.signinMsg ? '<div class="err" role="alert">' + esc(S.signinMsg) + '</div>' : '') +
       '<div id="gbtn" class="gbtn"></div>' +
-      '<div class="note"><b>Invite only.</b> Use the Google account your SEGARA PMO admin added. Company Google and personal Gmail both work.</div>' +
+      '<div class="note"><b>Invite only.</b> Use the Google account your PMO SEGERA admin added. Company Google and personal Gmail both work.</div>' +
       '</div></div>';
     if (!CFG.CLIENT_ID || /PASTE/.test(CFG.CLIENT_ID)) { $('#gbtn').innerHTML = '<div class="err">The app is not set up yet: add the Google client ID to config.js.</div>'; return; }
     if (S.gisFailed) {
@@ -380,7 +381,7 @@
       (g.length ? g.map(function (x) {
         return '<tr class="grp"><td colspan="9"><span class="swatch" style="background:' + esc(x.s.color) + '"></span> ' + esc(x.s.no) + '. ' + esc(x.s.name) + ' <span class="hint">· ' + x.items.length + '</span></td></tr>' +
           x.items.map(function (a) {
-            return '<tr class="row" tabindex="0" data-detail="' + esc(a.id) + '"><td class="d">' + esc(a.id) + '</td><td><div>' + esc(a.name) + '</div>' + (a.desc ? '<div class="sub">' + esc(a.desc) + '</div>' : '') + '</td>' +
+            return '<tr class="row" tabindex="0" data-detail="' + esc(a.id) + '"><td class="d">' + esc(a.id) + '</td><td><div>' + esc(a.name) + badges(a.id) + '</div>' + (a.desc ? '<div class="sub">' + esc(a.desc) + '</div>' : '') + '</td>' +
               '<td>' + esc(a.owner || '—') + '</td><td>' + esc(a.prio) + '</td><td>' + sPill(a.status) + '</td><td class="d">' + esc(a.start) + '</td><td class="d">' + esc(a.end) + '</td>' +
               '<td><div class="pct"><div class="track"><i style="width:' + a.pct + '%;background:' + esc(colorOf(a.stream)) + '"></i></div><span class="mono">' + a.pct + '%</span></div></td><td>' + hPill(a.health) + '</td></tr>';
           }).join('');
@@ -434,7 +435,7 @@
         ['Start', esc(a.start || '—')], ['Target end', esc(a.end || '—')], ['Complete', a.pct + '%'], ['Depends on', esc(a.dep || '—')], ['Description', esc(a.desc || '—')], ['Notes', esc(a.notes || '—')],
         ['Last updated', esc((a.updated || '—') + (a.updatedBy ? ' by ' + a.updatedBy : ''))]];
       if (canEdit(a.stream)) edit = '<button class="btn primary" type="button" data-edit-act="' + esc(a.id) + '">Edit</button>';
-      comments = '<section class="comments"><h3>Comments</h3>' + chatPanel('act:' + a.id, 'Comment on ' + a.id + '…') + '</section>';
+      comments = filesSection(a) + '<section class="comments"><h3>Comments</h3>' + chatPanel('act:' + a.id, 'Comment on ' + a.id + '…') + '</section>';
     } else {
       var r = S.risks.filter(function (x) { return x.id === d.id; })[0]; if (!r) return '';
       title = r.id + ' · ' + r.type;
@@ -742,6 +743,84 @@
       '<div class="panel"><div class="more-list"><button type="button" data-act="refresh">Refresh data</button>' + (DEMO ? '<button type="button" data-act="resetDemo">Reset demo data</button>' : '<button type="button" data-act="signOut">Sign out</button>') + '</div></div>';
   }
 
+
+  /* ---------------- Files attached to sub-activities ---------------- */
+  function badges(id) {
+    var n = S.files.counts && S.files.counts[id], c = S.chat.sum && S.chat.sum['act:' + id];
+    return (n ? ' <span class="cnt" title="' + n + ' file' + (n === 1 ? '' : 's') + '">📎' + n + '</span>' : '') + (c && c.n ? ' <span class="cnt" title="' + c.n + ' comment' + (c.n === 1 ? '' : 's') + '">💬' + c.n + (chatIsUnread('act:' + id) ? '•' : '') + '</span>' : '');
+  }
+  function fmtSize(n) { return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.round(n / 1024) + ' KB' : n + ' B'; }
+  function fileCounts() {
+    return api('filesCounts').then(function (r) { var b = JSON.stringify(S.files.counts); S.files.counts = r.counts || {}; S.files.max = r.maxBytes || S.files.max; if (JSON.stringify(S.files.counts) !== b) render(); }).catch(function () { /* best effort */ });
+  }
+  function loadFiles(actId, force) {
+    if (S.files.loading[actId] || (S.files.lists[actId] && !force)) return;
+    S.files.loading[actId] = true;
+    api('filesList', { activity: actId }).then(function (r) {
+      S.files.loading[actId] = false; S.files.err[actId] = null; S.files.lists[actId] = r.files || [];
+      S.files.counts = S.files.counts || {}; S.files.counts[actId] = S.files.lists[actId].length; render();
+    }).catch(function (e) {
+      S.files.loading[actId] = false; S.files.lists[actId] = [];
+      S.files.err[actId] = e && e.message === 'Unknown action.' ? 'File uploads are not switched on yet: the admin needs to add Files.gs in Apps Script.' : (e && e.message || 'Could not load the files.');
+      render();
+    });
+  }
+  function fileIcon(n) {
+    var x = String(n).split('.').pop().toLowerCase();
+    return { pdf: 'PDF', doc: 'DOC', docx: 'DOC', xls: 'XLS', xlsx: 'XLS', csv: 'CSV', ppt: 'PPT', pptx: 'PPT', jpg: 'IMG', jpeg: 'IMG', png: 'IMG', heic: 'IMG', zip: 'ZIP' }[x] || 'FILE';
+  }
+  function filesSection(a) {
+    var list = S.files.lists[a.id];
+    if (!list) loadFiles(a.id);
+    var can = canEdit(a.stream) && (DEMO || !S.offline), busy = S.files.busy[a.id], err = S.files.err[a.id];
+    var body = !list ? '<div class="skel" style="width:50%"></div>' : !list.length ? '<div class="empty">No files yet.' + (can ? ' Attach contracts, permits, photos or reports here.' : '') + '</div>' :
+      list.map(function (f) {
+        var del = S.me && (f.email === S.me.email || isAdmin());
+        return '<div class="file-row"><span class="ficon">' + fileIcon(f.name) + '</span><span class="t"><div><button type="button" class="linkbtn" data-file-dl="' + esc(f.id) + '">' + esc(f.name) + '</button></div><div>' + fmtSize(f.size) + ' · ' + esc(f.by || f.email) + ' · ' + esc(when(f.time)) + '</div></span>' +
+          '<button class="btn sm" type="button" data-file-dl="' + esc(f.id) + '">Download</button>' +
+          (del ? (S.confirm === 'file:' + f.id ? '<button class="btn sm danger" type="button" data-file-del="' + esc(f.id) + '" data-act-id="' + esc(a.id) + '">Delete?</button>' : '<button class="btn sm" type="button" data-file-ask="' + esc(f.id) + '" aria-label="Delete ' + esc(f.name) + '">×</button>') : '') + '</div>';
+      }).join('');
+    return '<section class="comments files"><div class="panel-head"><h3>Files' + (list && list.length ? ' (' + list.length + ')' : '') + '</h3>' +
+      (can ? '<label class="btn sm primary' + (busy ? ' disabled' : '') + '">' + (busy ? esc(busy) : '+ Attach files') + '<input type="file" multiple hidden data-file-up="' + esc(a.id) + '"' + (busy ? ' disabled' : '') + '></label>' : '') + '</div>' +
+      body + (err ? '<p class="msg err">' + esc(err) + '</p>' : '') +
+      (can ? '<p class="hint">Up to ' + Math.round(S.files.max / 1048576) + ' MB per file. Saved privately in the PMO SEGERA Google Drive folder.</p>' : '') + '</section>';
+  }
+  function readB64(file) {
+    return new Promise(function (res, rej) { var r = new FileReader(); r.onload = function () { res(String(r.result).split(',')[1] || ''); }; r.onerror = function () { rej(new Error('Could not read ' + file.name)); }; r.readAsDataURL(file); });
+  }
+  function uploadFiles(actId, files) {
+    files = Array.prototype.slice.call(files || []);
+    if (!files.length) return;
+    var big = files.filter(function (f) { return f.size > S.files.max; });
+    if (big.length) { S.files.err[actId] = big.map(function (f) { return f.name; }).join(', ') + ' is over ' + Math.round(S.files.max / 1048576) + ' MB. Share large files by link in a comment instead.'; files = files.filter(function (f) { return f.size <= S.files.max; }); }
+    else S.files.err[actId] = null;
+    var done = 0, fails = [];
+    function next() {
+      if (!files.length) {
+        S.files.busy[actId] = null;
+        if (done) toast('Attached ' + done + ' file' + (done === 1 ? '' : 's'));
+        if (fails.length) S.files.err[actId] = fails.join(' ');
+        render(); return;
+      }
+      var f = files.shift();
+      S.files.busy[actId] = 'Uploading ' + (done + fails.length + 1) + '…'; render();
+      readB64(f).then(function (b64) { return api('fileUpload', { activity: actId, name: f.name, type: f.type || 'application/octet-stream', data: b64 }); })
+        .then(function (r) { done++; (S.files.lists[actId] = S.files.lists[actId] || []).unshift(r.file); S.files.counts = S.files.counts || {}; S.files.counts[actId] = S.files.lists[actId].length; next(); })
+        .catch(function (e) { if (handleErr(e)) return; fails.push(f.name + ': ' + (e && e.message === 'Unknown action.' ? 'file uploads are not switched on yet.' : (e && e.message || 'failed') ) ); next(); });
+    }
+    next();
+  }
+  function downloadFile(id) {
+    toast('Downloading…');
+    api('fileDownload', { id: id }).then(function (r) {
+      var bin = atob(r.data), arr = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      var url = URL.createObjectURL(new Blob([arr], { type: r.type || 'application/octet-stream' }));
+      var a = document.createElement('a'); a.href = url; a.download = r.name; document.body.appendChild(a); a.click();
+      setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 4000);
+    }).catch(function (e) { if (!handleErr(e)) toast(e && e.message || 'Could not download.'); });
+  }
+
   /* ---------------- Chat: comments, team rooms, AI assistant ---------------- */
   function chatLast(thread) { var l = S.chat.threads[thread]; return l && l.length ? l[l.length - 1].id : ''; }
   function chatIsUnread(thread) {
@@ -870,7 +949,7 @@
     return '<div class="page-head"><h1>Ask AI</h1><span class="hint">Ask about the plan in English or Bahasa Indonesia. Answers use the live data; the assistant can\'t change anything.</span></div>' +
       '<section class="panel ai"><div class="chatlog" id="log-ai">' +
         (h.length ? h.map(function (m) {
-          return '<div class="msg-row' + (m.role === 'user' ? ' mine' : '') + '"><div class="bubble' + (m.role === 'assistant' ? ' ai-b' : '') + '"><div class="mhead"><b>' + (m.role === 'user' ? 'You' : 'SEGARA AI') + '</b></div><div class="mtext">' + fmtText(m.text) + '</div></div></div>';
+          return '<div class="msg-row' + (m.role === 'user' ? ' mine' : '') + '"><div class="bubble' + (m.role === 'assistant' ? ' ai-b' : '') + '"><div class="mhead"><b>' + (m.role === 'user' ? 'You' : 'AI assistant') + '</b></div><div class="mtext">' + fmtText(m.text) + '</div></div></div>';
         }).join('') : '<div class="empty">Try one of these:</div>') +
         (S.chat.aiBusy ? '<div class="msg-row"><div class="bubble ai-b"><div class="mtext muted">Thinking…</div></div></div>' : '') +
       '</div>' +
@@ -905,7 +984,7 @@
     return lines.join('\n');
   }
   function claudePrompt(q) {
-    return 'You are helping with SEGARA PMO, the launch plan for SEGARA, an Indonesian pawnshop (gadai) business. Answer my question using the plan data below. Be concise, put sub-activity IDs in front of names, and reply in the language I write in.\n\nMy question: ' + q + '\n\n' + planSnapshot();
+    return 'You are helping with PMO SEGERA, the launch plan for SEGARA, an Indonesian pawnshop (gadai) business. Answer my question using the plan data below. Be concise, put sub-activity IDs in front of names, and reply in the language I write in.\n\nMy question: ' + q + '\n\n' + planSnapshot();
   }
   function openInClaude(q) {
     q = String(q || '').trim();
@@ -914,7 +993,7 @@
     var url = 'https://claude.ai/new?q=' + encodeURIComponent(full);
     var copied = false;
     try { if (navigator.clipboard) { navigator.clipboard.writeText(full).catch(function () { /* clipboard not allowed */ }); copied = true; } } catch (e) { copied = false; }
-    if (url.length > 8000) url = 'https://claude.ai/new?q=' + encodeURIComponent('My SEGARA PMO question and plan data are on my clipboard. Please wait for me to paste them.');
+    if (url.length > 8000) url = 'https://claude.ai/new?q=' + encodeURIComponent('My PMO SEGERA question and plan data are on my clipboard. Please wait for me to paste them.');
     window.open(url, '_blank', 'noopener');
     S.chat.aiHist.push({ role: 'user', text: q });
     S.chat.drafts.ai = ''; S.chat.aiErr = null;
@@ -959,7 +1038,7 @@
 
   /* ---------------- events ---------------- */
   document.addEventListener('click', function (e) {
-    var t = e.target.closest('[data-act],[data-detail],[data-risk],[data-stream],[data-pick],[data-pick-stream],[data-pick-risk],[data-pick-user],[data-edit-act],[data-edit-risk],[data-color],[data-role],[data-restore],[data-room],[data-chat-del],[data-ai-q],[data-claude-q]');
+    var t = e.target.closest('[data-act],[data-detail],[data-risk],[data-stream],[data-pick],[data-pick-stream],[data-pick-risk],[data-pick-user],[data-edit-act],[data-edit-risk],[data-color],[data-role],[data-restore],[data-room],[data-chat-del],[data-ai-q],[data-claude-q],[data-file-dl],[data-file-ask],[data-file-del]');
     if (!t) return;
     var a = t.getAttribute('data-act');
     if (a === 'closeDetail') { if (e.target === t || t.tagName === 'BUTTON') { S.detail = null; render(); } return; }
@@ -981,6 +1060,12 @@
     if (t.hasAttribute('data-room')) { S.chat.room = t.getAttribute('data-room'); render(); var lg = document.querySelector('.main .chatlog'); if (lg && window.innerWidth < 761) lg.scrollIntoView({ block: 'start', behavior: 'smooth' }); return; }
     if (t.hasAttribute('data-ai-q')) return askAI(t.getAttribute('data-ai-q'));
     if (t.hasAttribute('data-claude-q')) return openInClaude(t.getAttribute('data-claude-q'));
+    if (t.hasAttribute('data-file-dl')) return downloadFile(t.getAttribute('data-file-dl'));
+    if (t.hasAttribute('data-file-ask')) { S.confirm = 'file:' + t.getAttribute('data-file-ask'); return render(); }
+    if (t.hasAttribute('data-file-del')) {
+      var fid = t.getAttribute('data-file-del'), aid = t.getAttribute('data-act-id'); S.confirm = null;
+      return api('fileDelete', { id: fid }).then(function () { S.files.lists[aid] = (S.files.lists[aid] || []).filter(function (f) { return f.id !== fid; }); S.files.counts[aid] = S.files.lists[aid].length; toast('File deleted'); render(); }).catch(function (er) { if (!handleErr(er)) toast(er && er.message || 'Could not delete.'); render(); });
+    }
     if (t.hasAttribute('data-chat-del')) {
       var mid = t.getAttribute('data-chat-del'), th = t.getAttribute('data-thread');
       return api('chatDelete', { id: mid }).then(function () { (S.chat.threads[th] || []).forEach(function (m) { if (m.id === mid) { m.deleted = true; m.text = ''; } }); toast('Message deleted'); render(); }).catch(function (er) { if (!handleErr(er, 'chat')) toast(er && er.message || 'Could not delete.'); });
@@ -1053,6 +1138,10 @@
     if (t.id === 'aStream' && !S.sel.act) { S.draft.act = readActForm(); return render(); }
     if (t.id === 'aStatus' && t.value === 'Completed') { var pc = $('#aPct'); if (pc) pc.value = 100; }
     if ((t.id === 'rImpact' || t.id === 'rLike')) { S.draft.risk = { stream: val('rStream'), type: val('rType'), desc: val('rDesc'), impact: val('rImpact'), like: val('rLike'), owner: val('rOwner'), due: val('rDue'), mit: val('rMit'), status: val('rStatus'), link: val('rLink') }; if (!S.sel.risk) return render(); }
+  });
+  document.addEventListener('change', function (e) {
+    var t = e.target;
+    if (t.hasAttribute && t.hasAttribute('data-file-up')) { var files = t.files; uploadFiles(t.getAttribute('data-file-up'), files); t.value = ''; }
   });
   document.addEventListener('submit', function (e) {
     e.preventDefault();

@@ -965,6 +965,9 @@ function makeGasShim(initial, onChange) {
     return String(v);
   }
   function pad(n) { return String(n).padStart(2, '0'); }
+  function blobOf(b64, type, name) {
+    return { b64: b64, type: type, name: name, getBytes: function () { var bin = typeof atob === 'function' ? atob(b64) : Buffer.from(b64, 'base64').toString('binary'); var out = []; for (var i = 0; i < bin.length; i++) out.push(bin.charCodeAt(i)); out.b64 = b64; return out; } };
+  }
   function fmt(d, f) {
     return f.replace('yyyy', d.getFullYear()).replace('MM', pad(d.getMonth() + 1)).replace('dd', pad(d.getDate()))
       .replace('HH', pad(d.getHours())).replace('mm', pad(d.getMinutes()));
@@ -1035,12 +1038,38 @@ function makeGasShim(initial, onChange) {
       formatDate: function (d, tz, f) { return fmt(d, f); },
       DigestAlgorithm: { SHA_256: 'sha256' },
       computeDigest: function (alg, s) { var h = 0; for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return [h]; },
-      base64EncodeWebSafe: function (b) { return 'h' + b.join(''); }
+      base64EncodeWebSafe: function (b) { return 'h' + b.join(''); },
+      base64Decode: function (b64) { var bin = typeof atob === 'function' ? atob(b64) : Buffer.from(b64, 'base64').toString('binary'); var out = []; for (var i = 0; i < bin.length; i++) out.push(bin.charCodeAt(i)); out.b64 = b64; return out; },
+      base64Encode: function (bytes) { if (bytes.b64) return bytes.b64; var bin = ''; for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i] & 255); return typeof btoa === 'function' ? btoa(bin) : Buffer.from(bin, 'binary').toString('base64'); },
+      newBlob: function (bytes, type, name) { return blobOf(bytes.b64 || this.base64Encode(bytes), type, name); }
     },
     CacheService: { getScriptCache: function () { return { get: function (k) { return cache[k] || null; }, put: function (k, v) { cache[k] = v; } }; } },
     LockService: { getScriptLock: function () { return { tryLock: function () { return true; }, releaseLock: function () {} }; } },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: function (t) { return { text: t, setMimeType: function () { return this; } }; } },
     UrlFetchApp: { fetch: function () { throw new Error('No network in shim'); } },
+    DriveApp: (function () {
+      function D() { return state.drive || (state.drive = { n: 0, folders: {}, files: {} }); }
+      function Folder(id) { this.id = id; }
+      Folder.prototype.getId = function () { return this.id; };
+      Folder.prototype.getUrl = function () { return 'https://drive.google.com/drive/folders/' + this.id; };
+      Folder.prototype.isTrashed = function () { return false; };
+      Folder.prototype.getFoldersByName = function (n) {
+        var self = this, list = Object.keys(D().folders).filter(function (k) { var f = D().folders[k]; return f.parent === self.id && f.name === n; });
+        return { hasNext: function () { return list.length > 0; }, next: function () { return new Folder(list.shift()); } };
+      };
+      Folder.prototype.createFolder = function (n) { var id = 'fo' + (++D().n); D().folders[id] = { name: n, parent: this.id }; return new Folder(id); };
+      Folder.prototype.createFile = function (blob) { var id = 'fi' + (++D().n); D().files[id] = { name: blob.name, type: blob.type, b64: blob.b64, parent: this.id, trashed: false }; return new DFile(id); };
+      function DFile(id) { this.id = id; }
+      DFile.prototype.getId = function () { return this.id; };
+      DFile.prototype.setDescription = function () { return this; };
+      DFile.prototype.setTrashed = function (t) { D().files[this.id].trashed = !!t; return this; };
+      DFile.prototype.getBlob = function () { var f = D().files[this.id]; return blobOf(f.b64, f.type, f.name); };
+      return {
+        createFolder: function (n) { var id = 'fo' + (++D().n); D().folders[id] = { name: n, parent: null }; return new Folder(id); },
+        getFolderById: function (id) { if (!D().folders[id]) throw new Error('not found'); return new Folder(id); },
+        getFileById: function (id) { if (!D().files[id]) throw new Error('not found'); return new DFile(id); }
+      };
+    })(),
     PropertiesService: { getScriptProperties: function () { var pr = state.props || (state.props = {}); return { getProperty: function (k) { return pr[k] || null; }, setProperty: function (k, v) { pr[k] = String(v); } }; } },
     state: function () { return state; }
   };
@@ -1084,11 +1113,11 @@ function makeSeed(plan, users) {
   try { stored = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) { stored = null; }
   var state = stored ? revive(stored) : makeSeed(PLAN, USERS);
   var G = makeGasShim(state, save);
-  var SpreadsheetApp = G.SpreadsheetApp, Utilities = G.Utilities, CacheService = G.CacheService, LockService = G.LockService, ContentService = G.ContentService, UrlFetchApp = G.UrlFetchApp, PropertiesService = G.PropertiesService;
+  var SpreadsheetApp = G.SpreadsheetApp, Utilities = G.Utilities, CacheService = G.CacheService, LockService = G.LockService, ContentService = G.ContentService, UrlFetchApp = G.UrlFetchApp, PropertiesService = G.PropertiesService, DriveApp = G.DriveApp;
   var as = (location.search.match(/[?&]as=(admin|editor|viewer)/) || [])[1] || 'admin';
   var EMAIL = as + '@demo.segara';
   /**
- * SEGARA PMO App — back end (Google Apps Script, bound to the
+ * PMO SEGERA App — back end (Google Apps Script, bound to the
  * "SEGARA Project Tracker (Data)" Google Sheet).
  *
  * Every request from the app carries a Google ID token. The script checks the
@@ -1156,7 +1185,7 @@ var DATE_FIELDS = { start: 1, end: 1, due: 1 };
 /* ------------------------------------------------------------------ */
 
 function doGet() {
-  return json_({ ok: true, app: 'SEGARA PMO API', time: new Date().toISOString() });
+  return json_({ ok: true, app: 'PMO SEGERA API', time: new Date().toISOString() });
 }
 
 function doPost(e) {
@@ -1170,7 +1199,7 @@ function doPost(e) {
     var email = verifyToken_(req.token);
     var user = findUser_(email);
     if (!user || !user.active) {
-      return json_({ ok: false, code: 'no_access', message: "You don't have access. Ask a SEGARA PMO admin to add " + email + '.' });
+      return json_({ ok: false, code: 'no_access', message: "You don't have access. Ask a PMO SEGERA admin to add " + email + '.' });
     }
     var fn = ACTIONS[req.action];
     if (!fn) return json_({ ok: false, code: 'invalid', message: 'Unknown action.' });
@@ -1212,7 +1241,7 @@ function verifyToken_(token) {
   var res = UrlFetchApp.fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(token), { muteHttpExceptions: true });
   if (res.getResponseCode() !== 200) throw err_('auth', 'Your sign-in has expired. Sign in again.');
   var info = JSON.parse(res.getContentText());
-  if (info.aud !== CONFIG.CLIENT_ID) throw err_('auth', 'This sign-in is not for SEGARA PMO.');
+  if (info.aud !== CONFIG.CLIENT_ID) throw err_('auth', 'This sign-in is not for PMO SEGERA.');
   if (String(info.email_verified) !== 'true') throw err_('auth', 'Your Google email is not verified.');
   if (Number(info.exp) * 1000 < Date.now()) throw err_('auth', 'Your sign-in has expired. Sign in again.');
   var email = String(info.email).toLowerCase();
@@ -1291,7 +1320,7 @@ function readSettings_() {
   var map = {};
   vals.forEach(function (r) { if (r[0]) map[String(r[0])] = r[1]; });
   var t = Number(map['At-risk threshold']);
-  return { threshold: isNaN(t) ? 0.2 : (t > 1 ? t / 100 : t), appName: str_(map['App name']) || 'SEGARA PMO', timezone: TZ };
+  return { threshold: isNaN(t) ? 0.2 : (t > 1 ? t / 100 : t), appName: str_(map['App name']) || 'PMO SEGERA', timezone: TZ };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1589,7 +1618,7 @@ function changeLog_(user, p) {
 function saveSettings_(user, p) {
   var t = Number(p.threshold);
   if (isNaN(t) || t < 0 || t > 1) throw err_('invalid', 'The at-risk threshold must be between 0% and 100%.');
-  var name = str_(p.appName).trim() || 'SEGARA PMO';
+  var name = str_(p.appName).trim() || 'PMO SEGERA';
   var before = readSettings_();
   var sh = sheet_('Settings');
   sh.getRange(2, 2).setValue(t);
@@ -1828,7 +1857,7 @@ function setup() {
     var threshold = 0.2;
     var dash = ss.getSheetByName('Dashboard');
     if (dash) { var v = Number(dash.getRange('B3').getValue()); if (!isNaN(v) && v > 0 && v < 1) threshold = v; }
-    settings.getRange(1, 1, 4, 2).setValues([['Setting', 'Value'], ['At-risk threshold', threshold], ['App name', 'SEGARA PMO'], ['Time zone', TZ]]);
+    settings.getRange(1, 1, 4, 2).setValues([['Setting', 'Value'], ['At-risk threshold', threshold], ['App name', 'PMO SEGERA'], ['Time zone', TZ]]);
     settings.getRange(2, 2).setNumberFormat('0%');
     styleHeader_(settings, 2);
     if (dash) dash.getRange('B3').setFormula('=Settings!B2');
@@ -1850,7 +1879,7 @@ function testConnection() {
 }
 
 /**
- * SEGARA PMO: chat. Comments on each sub-activity, team chat rooms, and an AI assistant.
+ * PMO SEGERA: chat. Comments on each sub-activity, team chat rooms, and an AI assistant.
  *
  * Add this as a new file in the same Apps Script project as Code.gs
  * (Files + > Script, name it "Chat"). It must be listed BELOW Code.gs.
@@ -2028,7 +2057,7 @@ function aiSystem_(user) {
   lines.push('', 'RISKS AND ISSUES (id | stream | type | description | severity | owner | due | status):');
   risks.forEach(function (r) { lines.push([r.id, r.stream, r.type, r.desc.slice(0, 200), r.sev, r.owner || '-', r.due || '-', r.status].join(' | ')); });
   return [
-    'You are the assistant inside SEGARA PMO, the programme tracker for launching SEGARA, an Indonesian pawnshop (gadai) business: OJK licensing, branches, software, funding, sales and handphone sales.',
+    'You are the assistant inside PMO SEGERA, the programme tracker for launching SEGARA, an Indonesian pawnshop (gadai) business: OJK licensing, branches, software, funding, sales and handphone sales.',
     'Today is ' + today + ' (Asia/Jakarta). You are talking to ' + (user.name || user.email) + ', whose role is ' + user.role + '.',
     'Answer from the programme data below. Be concise and practical: short paragraphs or short lists, IDs in front of sub-activities (for example "2.3 Lease negotiation"). Dates as "12 Dec 2026".',
     'Health rules: Overdue = target end passed and not completed; Late Start = not started after its start date; At Risk = % complete more than ' + Math.round(th * 100) + ' points behind plan.',
@@ -2038,6 +2067,142 @@ function aiSystem_(user) {
     '',
     lines.join('\n')
   ].join('\n');
+}
+
+/**
+ * PMO SEGERA: file attachments for each sub-activity.
+ *
+ * Add this as a new file in the same Apps Script project as Code.gs, listed BELOW Code.gs.
+ * Files are stored in the script owner's Google Drive, in a folder called "PMO SEGERA files"
+ * with one sub-folder per sub-activity. They stay private: the app downloads them through
+ * this script, so team members never need Drive access. A list of files is kept in an
+ * "Attachments" tab that this file creates the first time it runs.
+ *
+ * Needs the Drive permission: add "https://www.googleapis.com/auth/drive" to oauthScopes in
+ * appsscript.json, then run filesSetup() once from the editor and approve.
+ */
+
+var FILES = {
+  TAB: 'Attachments',
+  HEADERS: ['ID', 'Time', 'Activity', 'File name', 'Type', 'Size (bytes)', 'Drive file ID', 'Email', 'Name', 'Deleted'],
+  FOLDER: 'PMO SEGERA files',
+  MAX_BYTES: 10 * 1024 * 1024
+};
+
+ACTIONS.filesCounts = function () { return filesCounts_(); };
+ACTIONS.filesList = function (user, p) { return filesList_(p.activity); };
+ACTIONS.fileUpload = function (user, p) { return withLock_(function () { return fileUpload_(user, p); }); };
+ACTIONS.fileDownload = function (user, p) { return fileDownload_(p.id); };
+ACTIONS.fileDelete = function (user, p) { return withLock_(function () { return fileDelete_(user, p.id); }); };
+
+/** Run once from the editor: asks for the Drive permission and creates the folder and tab. */
+function filesSetup() {
+  var f = filesRoot_();
+  filesSheet_();
+  Logger.log('Files are ready. Drive folder: %s', f.getUrl());
+}
+
+function filesSheet_() {
+  var ss = ss_();
+  var sh = ss.getSheetByName(FILES.TAB);
+  if (!sh) {
+    sh = ss.insertSheet(FILES.TAB);
+    sh.getRange(1, 1, 1, FILES.HEADERS.length).setValues([FILES.HEADERS]);
+    sh.getRange(1, 1, 1, FILES.HEADERS.length).setFontWeight('bold').setFontColor('#ffffff').setBackground('#1f3864');
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+function filesRoot_() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty('FILES_FOLDER_ID');
+  if (id) { try { var f = DriveApp.getFolderById(id); if (!f.isTrashed()) return f; } catch (e) { /* folder gone: make a new one */ } }
+  var folder = DriveApp.createFolder(FILES.FOLDER);
+  props.setProperty('FILES_FOLDER_ID', folder.getId());
+  return folder;
+}
+
+function activityFolder_(actId) {
+  var root = filesRoot_();
+  var it = root.getFoldersByName(actId);
+  return it.hasNext() ? it.next() : root.createFolder(actId);
+}
+
+function fileRows_() {
+  var sh = filesSheet_();
+  var last = sh.getLastRow();
+  if (last < 2) return [];
+  return sh.getRange(2, 1, last - 1, FILES.HEADERS.length).getValues().map(function (r, i) {
+    return { _row: i + 2, id: str_(r[0]), time: stampStr_(r[1]), activity: str_(r[2]), name: str_(r[3]), type: str_(r[4]), size: Number(r[5]) || 0,
+      driveId: str_(r[6]), email: str_(r[7]).toLowerCase(), by: str_(r[8]), deleted: isTrue_(r[9]) };
+  }).filter(function (f) { return f.id && !f.deleted; });
+}
+
+function cleanFile_(f) { return { id: f.id, time: f.time, activity: f.activity, name: f.name, type: f.type, size: f.size, email: f.email, by: f.by }; }
+
+function findActivity_(actId) {
+  actId = str_(actId);
+  var a = readTable_('Activities').filter(notDeleted_).filter(function (x) { return str_(x.id) === actId; })[0];
+  if (!a) throw err_('invalid', 'That sub-activity no longer exists.');
+  return cleanActivity_(a);
+}
+
+function filesCounts_() {
+  var counts = {};
+  fileRows_().forEach(function (f) { counts[f.activity] = (counts[f.activity] || 0) + 1; });
+  return { counts: counts, maxBytes: FILES.MAX_BYTES };
+}
+
+function filesList_(actId) {
+  var a = findActivity_(actId);
+  var list = fileRows_().filter(function (f) { return f.activity === a.id; }).sort(function (x, y) { return x.id < y.id ? 1 : -1; });
+  return { activity: a.id, files: list.map(cleanFile_) };
+}
+
+function safeFileName_(n) {
+  n = String(n || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim();
+  return (n || 'file').slice(0, 150);
+}
+
+function fileUpload_(user, p) {
+  var a = findActivity_(p.activity);
+  if (!canEditStream_(user, a.stream)) throw err_('forbidden', 'You can attach files only in the streams you can edit.');
+  var name = safeFileName_(p.name);
+  var data = String(p.data || '');
+  if (!data) throw err_('invalid', 'The file is empty.');
+  var bytes = Utilities.base64Decode(data);
+  if (!bytes.length) throw err_('invalid', 'The file is empty.');
+  if (bytes.length > FILES.MAX_BYTES) throw err_('invalid', name + ' is larger than ' + Math.round(FILES.MAX_BYTES / 1048576) + ' MB.');
+  var type = /^[\w.+-]+\/[\w.+-]+$/.test(String(p.type || '')) ? String(p.type) : 'application/octet-stream';
+  var file = activityFolder_(a.id).createFile(Utilities.newBlob(bytes, type, name));
+  file.setDescription('PMO SEGERA ' + a.id + ' · uploaded by ' + user.email);
+  var id = 'f' + Date.now() + String(Math.floor(Math.random() * 1000) + 1000).slice(1);
+  var sh = filesSheet_();
+  var row = Math.max(2, sh.getLastRow() + 1);
+  if (row > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 100);
+  var now = nowStamp_();
+  sh.getRange(row, 1, 1, FILES.HEADERS.length).setValues([[id, now, a.id, name, type, bytes.length, file.getId(), user.email, user.name || user.email, false]]);
+  appendLog_([[user.email, 'Activity', a.id, 'File added', '', name]]);
+  return { file: { id: id, time: now, activity: a.id, name: name, type: type, size: bytes.length, email: user.email, by: user.name || user.email } };
+}
+
+function fileDownload_(id) {
+  var f = fileRows_().filter(function (x) { return x.id === str_(id); })[0];
+  if (!f) throw err_('invalid', 'That file was not found. It may have been deleted.');
+  var blob;
+  try { blob = DriveApp.getFileById(f.driveId).getBlob(); } catch (e) { throw err_('invalid', 'The file is missing from Google Drive.'); }
+  return { name: f.name, type: f.type, data: Utilities.base64Encode(blob.getBytes()) };
+}
+
+function fileDelete_(user, id) {
+  var f = fileRows_().filter(function (x) { return x.id === str_(id); })[0];
+  if (!f) throw err_('invalid', 'That file was not found.');
+  if (f.email !== user.email && user.role !== 'Admin') throw err_('forbidden', 'Only the person who added the file, or an Admin, can delete it.');
+  try { DriveApp.getFileById(f.driveId).setTrashed(true); } catch (e) { /* already gone from Drive */ }
+  filesSheet_().getRange(f._row, 10, 1, 1).setValues([[true]]);
+  appendLog_([[user.email, 'Activity', f.activity, 'File deleted', f.name, '']]);
+  return { deleted: f.id };
 }
 
   verifyToken_ = function () { return EMAIL; };
