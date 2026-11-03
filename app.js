@@ -118,7 +118,10 @@
   function whenGis(cb, tries) {
     tries = tries || 0;
     if (window.google && google.accounts && google.accounts.id) return cb();
-    if (tries > 100) { S.signinMsg = "Google sign-in didn't load. Check your internet connection and reopen the app."; return render(); }
+    if (tries === 80) { // slow phone network or a blocked first load: ask for the Google script once more
+      var s = document.createElement('script'); s.src = 'https://accounts.google.com/gsi/client?r=' + Date.now(); s.async = true; document.head.appendChild(s);
+    }
+    if (tries > 300) { S.gisFailed = true; S.signinMsg = "Google sign-in didn't load. Check your internet connection, then tap Try again. On iPhone, also turn off any ad blocker or VPN for this app."; return render(); }
     setTimeout(function () { whenGis(cb, tries + 1); }, 100);
   }
   var gisReady = false;
@@ -277,6 +280,11 @@
       '<div class="note"><b>Invite only.</b> Use the Google account your SEGARA PMO admin added. Company Google and personal Gmail both work.</div>' +
       '</div></div>';
     if (!CFG.CLIENT_ID || /PASTE/.test(CFG.CLIENT_ID)) { $('#gbtn').innerHTML = '<div class="err">The app is not set up yet: add the Google client ID to config.js.</div>'; return; }
+    if (S.gisFailed) {
+      $('#gbtn').innerHTML = '<button class="btn" type="button" id="gisRetry">Try again</button>';
+      $('#gisRetry').onclick = function () { location.reload(); };
+      return;
+    }
     whenGis(function () {
       initGis();
       var w = Math.min(320, $('#gbtn').clientWidth || 300);
